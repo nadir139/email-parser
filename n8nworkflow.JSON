@@ -1,0 +1,294 @@
+{
+  "name": "Email AI Agent - Classification & Draft Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 50,
+        "simple": false,
+        "filters": {
+          "labelIds": ["UNREAD"]
+        }
+      },
+      "name": "Gmail - Get Unread",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [470, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Loop Emails",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "options": {},
+        "bodyParametersJson": "={\n  \"model\": \"claude-3-5-haiku-20241022\",\n  \"max_tokens\": 100,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": \"Classify this email into ONE category only. Respond with exactly one word: Important, Newsletter, Advertisement, or Subscription\\n\\nFrom: {{ $json.from }}\\nSubject: {{ $json.subject }}\\nBody: {{ $json.snippet }}\\n\\nCategory:\"\n  }]\n}"
+      },
+      "name": "Classify Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [910, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "2",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const category = $input.item.json.content[0].text.trim();\nreturn {\n  ...item,\n  category: category,\n  emailId: $('Loop Emails').item.json.id,\n  from: $('Loop Emails').item.json.from,\n  to: $('Loop Emails').item.json.to,\n  cc: $('Loop Emails').item.json.cc || '',\n  subject: $('Loop Emails').item.json.subject,\n  threadId: $('Loop Emails').item.json.threadId,\n  snippet: $('Loop Emails').item.json.snippet\n};"
+      },
+      "name": "Extract Category",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1130, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.category }}",
+              "operation": "equals",
+              "value2": "Important"
+            }
+          ]
+        }
+      },
+      "name": "IF Important",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "messageId": "={{ $json.emailId }}",
+        "simple": false
+      },
+      "name": "Get Full Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1570, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "options": {},
+        "bodyParametersJson": "={\n  \"model\": \"claude-3-5-haiku-20241022\",\n  \"max_tokens\": 600,\n  \"messages\": [{\n    \"role\": \"user\",\n    \"content\": \"You are an email assistant for Nadir Balena, a project manager for sailing racing projects.\\n\\nGenerate a professional draft reply with 2 options (positive and negative/alternative scenarios). Keep it concise and professional.\\n\\nEmail to reply to:\\nFrom: {{ $json.from }}\\nSubject: {{ $json.subject }}\\nBody:\\n{{ $json.plainText }}\\n\\nFormat your response exactly like this:\\n\\nHi [Name],\\n\\nOption 1: [Positive response]\\n\\nOption 2: [Negative/Alternative response]\\n\\nBest regards,\\nNadir Balena\"\n  }]\n}"
+      },
+      "name": "Generate Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1790, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "2",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const draftBody = $input.item.json.content[0].text;\nconst email = $('Get Full Email').item.json;\n\nreturn {\n  draftBody: draftBody,\n  to: email.from,\n  cc: email.cc || '',\n  subject: email.subject.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,\n  threadId: email.threadId,\n  emailId: email.id\n};"
+      },
+      "name": "Prepare Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2010, 200]
+    },
+    {
+      "parameters": {
+        "operation": "draft",
+        "to": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.draftBody }}",
+        "additionalFields": {
+          "cc": "={{ $json.cc }}",
+          "threadId": "={{ $json.threadId }}"
+        }
+      },
+      "name": "Create Gmail Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2230, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.emailId }}",
+        "labelIds": ["Label_AI_Important"]
+      },
+      "name": "Label Important",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2450, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.emailId }}",
+        "labelIds": ["={{ 'Label_AI_' + $json.category }}"]
+      },
+      "name": "Label Other",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1570, 400],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.emailId }}"
+      },
+      "name": "Mark as Read",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2670, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "1",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [[{"node": "Gmail - Get Unread", "type": "main", "index": 0}]]
+    },
+    "Gmail - Get Unread": {
+      "main": [[{"node": "Loop Emails", "type": "main", "index": 0}]]
+    },
+    "Loop Emails": {
+      "main": [[{"node": "Classify Email", "type": "main", "index": 0}]]
+    },
+    "Classify Email": {
+      "main": [[{"node": "Extract Category", "type": "main", "index": 0}]]
+    },
+    "Extract Category": {
+      "main": [[{"node": "IF Important", "type": "main", "index": 0}]]
+    },
+    "IF Important": {
+      "main": [
+        [{"node": "Get Full Email", "type": "main", "index": 0}],
+        [{"node": "Label Other", "type": "main", "index": 0}]
+      ]
+    },
+    "Get Full Email": {
+      "main": [[{"node": "Generate Draft", "type": "main", "index": 0}]]
+    },
+    "Generate Draft": {
+      "main": [[{"node": "Prepare Draft", "type": "main", "index": 0}]]
+    },
+    "Prepare Draft": {
+      "main": [[{"node": "Create Gmail Draft", "type": "main", "index": 0}]]
+    },
+    "Create Gmail Draft": {
+      "main": [[{"node": "Label Important", "type": "main", "index": 0}]]
+    },
+    "Label Important": {
+      "main": [[{"node": "Mark as Read", "type": "main", "index": 0}]]
+    },
+    "Label Other": {
+      "main": [[{"node": "Mark as Read", "type": "main", "index": 0}]]
+    },
+    "Mark as Read": {
+      "main": [[{"node": "Loop Emails", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
